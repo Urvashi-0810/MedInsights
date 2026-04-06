@@ -1,7 +1,8 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
+import { useParams } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Badge } from "@/components/ui/badge"
@@ -10,129 +11,185 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
 import { Separator } from "@/components/ui/separator"
 import {
   ArrowLeft,
-  Download,
-  Share2,
-  Printer,
   AlertTriangle,
   CheckCircle2,
   Info,
   Sparkles,
-  Heart,
-  Activity,
-  Droplet,
-  TrendingUp,
-  TrendingDown,
   ArrowRight,
   Pill,
   Salad,
-  AlertCircle
+  Activity,
 } from "lucide-react"
+import {
+  ApiError,
+  extractFileName,
+  getRiskLevelFromScore,
+  getFullReport,
+  getReportAiSummary,
+  getReportDietPlan,
+  getReportOverview,
+  getReportParameters,
+  getReportRecommendations,
+  type ReportAiSummary,
+  type ReportDietPlan,
+  type ReportOverview,
+  type ReportParameter,
+  type ReportRecommendations,
+} from "@/lib/api"
 
-// Mock report data
-const reportData = {
-  id: "1",
-  name: "Complete Blood Count",
-  date: "2024-01-15",
-  laboratory: "City Diagnostics Lab",
-  doctor: "Dr. Smith",
-  overallRisk: 68,
-  parameters: [
-    { name: "Hemoglobin", value: "13.5", unit: "g/dL", normalRange: "12.0-15.5", status: "normal" },
-    { name: "RBC Count", value: "4.8", unit: "million/mcL", normalRange: "4.5-5.5", status: "normal" },
-    { name: "WBC Count", value: "11.2", unit: "thousand/mcL", normalRange: "4.5-11.0", status: "high" },
-    { name: "Platelet Count", value: "250", unit: "thousand/mcL", normalRange: "150-400", status: "normal" },
-    { name: "Hematocrit", value: "42", unit: "%", normalRange: "36-44", status: "normal" },
-    { name: "MCV", value: "88", unit: "fL", normalRange: "80-100", status: "normal" },
-    { name: "MCH", value: "28", unit: "pg", normalRange: "27-31", status: "normal" },
-    { name: "MCHC", value: "32", unit: "g/dL", normalRange: "32-36", status: "normal" },
-    { name: "Blood Glucose (Fasting)", value: "142", unit: "mg/dL", normalRange: "70-100", status: "high" },
-    { name: "HbA1c", value: "6.8", unit: "%", normalRange: "4.0-5.6", status: "high" },
-    { name: "Total Cholesterol", value: "210", unit: "mg/dL", normalRange: "<200", status: "high" },
-    { name: "LDL Cholesterol", value: "140", unit: "mg/dL", normalRange: "<100", status: "high" },
-    { name: "HDL Cholesterol", value: "45", unit: "mg/dL", normalRange: ">40", status: "normal" },
-    { name: "Triglycerides", value: "180", unit: "mg/dL", normalRange: "<150", status: "high" },
-  ],
-  riskAssessment: [
-    { disease: "Diabetes", risk: 78, status: "high", trend: "up" },
-    { disease: "Heart Disease", risk: 55, status: "medium", trend: "stable" },
-    { disease: "Anemia", risk: 12, status: "low", trend: "down" },
-    { disease: "Infection Risk", risk: 35, status: "medium", trend: "up" },
-  ],
-  aiSummary: `Based on your blood test results, several important findings require attention:
+type Priority = "high" | "medium" | "low"
 
-**Key Concerns:**
-1. **Elevated Blood Sugar**: Your fasting glucose (142 mg/dL) and HbA1c (6.8%) indicate pre-diabetic levels. This suggests your body is having difficulty managing blood sugar.
+interface RecommendationItem {
+  key: string
+  title: string
+  description: string
+  priority: Priority
+}
 
-2. **High Cholesterol Levels**: Your total cholesterol (210 mg/dL) and LDL (140 mg/dL) are above recommended levels, increasing cardiovascular risk.
-
-3. **Elevated WBC Count**: Slightly elevated white blood cells may indicate a mild infection or inflammation.
-
-**What This Means:**
-- You are at increased risk for developing Type 2 diabetes
-- Your heart disease risk is moderate and needs attention
-- No signs of anemia - your hemoglobin levels are healthy
-
-**Root Causes Analysis:**
-Your elevated glucose and cholesterol may be linked to:
-- Dietary factors (high carbohydrate/sugar intake)
-- Sedentary lifestyle
-- Possible genetic predisposition
-- Stress-related hormonal changes`,
-  recommendations: {
-    homeRemedies: [
-      { title: "Cinnamon Tea", description: "Drink cinnamon tea twice daily to help regulate blood sugar", priority: "high" },
-      { title: "Fenugreek Seeds", description: "Soak 1 tbsp fenugreek seeds overnight and consume on empty stomach", priority: "high" },
-      { title: "Garlic", description: "Consume 2 raw garlic cloves daily to help lower cholesterol", priority: "medium" },
-      { title: "Apple Cider Vinegar", description: "1 tbsp diluted in water before meals can help with glucose control", priority: "medium" },
-      { title: "Green Tea", description: "Replace regular tea with green tea (3 cups/day) for antioxidant benefits", priority: "low" },
-    ],
-    medicalSuggestions: [
-      { title: "Metformin", description: "Common medication for managing pre-diabetes and Type 2 diabetes", priority: "high" },
-      { title: "Statins", description: "May be prescribed to help lower LDL cholesterol levels", priority: "medium" },
-      { title: "Omega-3 Supplements", description: "Can help manage triglyceride levels", priority: "low" },
-    ],
-    lifestyle: [
-      { title: "30 min daily walk", description: "Moderate exercise helps improve insulin sensitivity" },
-      { title: "Reduce sugar intake", description: "Limit added sugars to less than 25g per day" },
-      { title: "Increase fiber", description: "Aim for 25-30g of fiber daily from whole grains and vegetables" },
-      { title: "Stay hydrated", description: "Drink at least 8 glasses of water daily" },
-    ]
+function normalizePriority(value: unknown): Priority {
+  if (typeof value !== "string") {
+    return "medium"
   }
+
+  const normalized = value.toLowerCase()
+  if (normalized === "high" || normalized === "low") {
+    return normalized
+  }
+
+  return "medium"
+}
+
+function normalizeRecommendationList(items: Array<string | Record<string, unknown>>): RecommendationItem[] {
+  return items.map((item, index) => {
+    if (typeof item === "string") {
+      return {
+        key: `${item}-${index}`,
+        title: item,
+        description: "",
+        priority: "medium",
+      }
+    }
+
+    const rawTitle = item.title ?? item.name ?? item.medicine
+    const rawDescription = item.description
+
+    const title = typeof rawTitle === "string" ? rawTitle : `Item ${index + 1}`
+    const description = typeof rawDescription === "string" ? rawDescription : ""
+
+    return {
+      key: `${title}-${index}`,
+      title,
+      description,
+      priority: normalizePriority(item.priority),
+    }
+  })
+}
+
+function getPriorityBadge(priority: Priority) {
+  if (priority === "high") {
+    return <Badge variant="outline" className="bg-destructive/10 text-destructive border-destructive/20">High Priority</Badge>
+  }
+
+  if (priority === "low") {
+    return <Badge variant="outline" className="bg-muted text-muted-foreground border-border">Low</Badge>
+  }
+
+  return <Badge variant="outline" className="bg-warning/20 text-warning-foreground border-warning/20">Medium</Badge>
 }
 
 export default function ReportDetailPage() {
-  const [activeTab, setActiveTab] = useState("overview")
+  const params = useParams<{ id: string }>()
+  const reportId = Number(params.id)
 
-  const getStatusColor = (status: string) => {
-    switch (status) {
-      case "normal": return "text-success bg-success/10"
-      case "high": return "text-destructive bg-destructive/10"
-      case "low": return "text-warning-foreground bg-warning/20"
-      default: return "text-muted-foreground bg-muted"
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
+
+  const [reportName, setReportName] = useState("Medical Report")
+  const [reportDate, setReportDate] = useState<string | null>(null)
+
+  const [overview, setOverview] = useState<ReportOverview | null>(null)
+  const [parameters, setParameters] = useState<ReportParameter[]>([])
+  const [aiSummary, setAiSummary] = useState<ReportAiSummary | null>(null)
+  const [recommendations, setRecommendations] = useState<ReportRecommendations | null>(null)
+  const [dietPlan, setDietPlan] = useState<ReportDietPlan | null>(null)
+
+  useEffect(() => {
+    const fetchReportData = async () => {
+      if (Number.isNaN(reportId)) {
+        setError("Invalid report ID")
+        setLoading(false)
+        return
+      }
+
+      setLoading(true)
+      setError(null)
+
+      try {
+        const [fullReport, overviewRes, paramsRes, summaryRes, recsRes, dietRes] = await Promise.all([
+          getFullReport(reportId),
+          getReportOverview(reportId),
+          getReportParameters(reportId),
+          getReportAiSummary(reportId),
+          getReportRecommendations(reportId),
+          getReportDietPlan(reportId),
+        ])
+
+        setReportName(extractFileName(fullReport.file_url))
+        setReportDate(fullReport.created_at || null)
+        setOverview(overviewRes)
+        setParameters(paramsRes.parameters || [])
+        setAiSummary(summaryRes)
+        setRecommendations(recsRes)
+        setDietPlan(dietRes)
+      } catch (err: unknown) {
+        const message = err instanceof ApiError ? err.message : "Failed to load report"
+        setError(message)
+      } finally {
+        setLoading(false)
+      }
     }
+
+    fetchReportData()
+  }, [reportId])
+
+  const riskEntries = useMemo(() => {
+    if (!overview?.risks) {
+      return [] as Array<{ name: string; value: number; level: "low" | "medium" | "high" }>
+    }
+
+    return Object.entries(overview.risks)
+      .filter(([key]) => key !== "overall")
+      .map(([name, value]) => ({
+        name: name.replaceAll("_", " "),
+        value,
+        level: getRiskLevelFromScore(value),
+      }))
+  }, [overview])
+
+  const homeRemedies = normalizeRecommendationList(recommendations?.home_remedies || [])
+  const medications = normalizeRecommendationList(recommendations?.medications || [])
+  const lifestyleChanges = normalizeRecommendationList(recommendations?.lifestyle_changes || [])
+
+  if (loading) {
+    return <div className="text-sm text-muted-foreground">Loading report...</div>
   }
 
-  const getRiskColor = (status: string) => {
-    switch (status) {
-      case "low": return "bg-success"
-      case "medium": return "bg-warning"
-      case "high": return "bg-destructive"
-      default: return "bg-muted"
-    }
+  if (error) {
+    return (
+      <div className="space-y-4">
+        <div className="text-sm text-destructive">{error}</div>
+        <Button variant="outline" asChild>
+          <Link href="/dashboard/reports">Back to reports</Link>
+        </Button>
+      </div>
+    )
   }
 
-  const getPriorityBadge = (priority: string) => {
-    switch (priority) {
-      case "high": return <Badge variant="outline" className="bg-destructive/10 text-destructive border-destructive/20">High Priority</Badge>
-      case "medium": return <Badge variant="outline" className="bg-warning/20 text-warning-foreground border-warning/20">Medium</Badge>
-      case "low": return <Badge variant="outline" className="bg-muted text-muted-foreground border-border">Low</Badge>
-      default: return null
-    }
-  }
+  const overallScore = overview?.overall_risk_score ?? 0
+  const overallLevel = getRiskLevelFromScore(overallScore)
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-4">
         <div className="flex items-start gap-4">
           <Button variant="outline" size="icon" asChild>
@@ -141,51 +198,34 @@ export default function ReportDetailPage() {
             </Link>
           </Button>
           <div>
-            <h1 className="text-2xl md:text-3xl font-bold text-foreground">{reportData.name}</h1>
+            <h1 className="text-2xl md:text-3xl font-bold text-foreground">{reportName}</h1>
             <div className="flex flex-wrap items-center gap-3 mt-2 text-sm text-muted-foreground">
-              <span>{new Date(reportData.date).toLocaleDateString('en-US', { dateStyle: 'long' })}</span>
+              <span>{reportDate ? new Date(reportDate).toLocaleDateString("en-US", { dateStyle: "long" }) : "Date unavailable"}</span>
               <Separator orientation="vertical" className="h-4" />
-              <span>{reportData.laboratory}</span>
+              <span>Report #{reportId}</span>
             </div>
           </div>
         </div>
-        <div className="flex items-center gap-2">
-          <Button variant="outline" size="sm">
-            <Share2 className="mr-2 h-4 w-4" />
-            Share
-          </Button>
-          <Button variant="outline" size="sm">
-            <Printer className="mr-2 h-4 w-4" />
-            Print
-          </Button>
-          <Button size="sm">
-            <Download className="mr-2 h-4 w-4" />
-            Download PDF
-          </Button>
-        </div>
       </div>
 
-      {/* Overall Risk Score */}
       <Card className="border-border">
         <CardContent className="p-6">
           <div className="flex flex-col md:flex-row md:items-center gap-6">
             <div className="flex-1">
               <p className="text-sm font-medium text-muted-foreground mb-2">Overall Health Risk Score</p>
               <div className="flex items-end gap-3">
-                <span className="text-5xl font-bold text-foreground">{reportData.overallRisk}</span>
+                <span className="text-5xl font-bold text-foreground">{overallScore}</span>
                 <span className="text-xl text-muted-foreground mb-2">/100</span>
-                <Badge variant="outline" className="mb-2 bg-warning/20 text-warning-foreground border-warning/20">
-                  Medium Risk
-                </Badge>
+                <Badge variant="outline" className="mb-2 capitalize">{overallLevel} Risk</Badge>
               </div>
-              <Progress value={reportData.overallRisk} className="h-3 mt-4 [&>div]:bg-warning" />
+              <Progress value={overallScore} className="h-3 mt-4" />
             </div>
             <Separator orientation="vertical" className="hidden md:block h-24" />
             <div className="grid grid-cols-2 gap-4">
-              {reportData.riskAssessment.slice(0, 4).map((item, index) => (
-                <div key={index} className="text-center">
-                  <p className="text-2xl font-bold text-foreground">{item.risk}%</p>
-                  <p className="text-sm text-muted-foreground">{item.disease}</p>
+              {riskEntries.slice(0, 4).map((entry) => (
+                <div key={entry.name} className="text-center">
+                  <p className="text-2xl font-bold text-foreground">{entry.value}%</p>
+                  <p className="text-sm text-muted-foreground capitalize">{entry.name}</p>
                 </div>
               ))}
             </div>
@@ -193,41 +233,16 @@ export default function ReportDetailPage() {
         </CardContent>
       </Card>
 
-      {/* Tabs */}
-      <Tabs value={activeTab} onValueChange={setActiveTab}>
-        <TabsList className="w-full md:w-auto grid grid-cols-4 md:flex">
+      <Tabs defaultValue="overview">
+        <TabsList className="w-full md:w-auto grid grid-cols-5 md:flex">
           <TabsTrigger value="overview">Overview</TabsTrigger>
           <TabsTrigger value="parameters">Parameters</TabsTrigger>
           <TabsTrigger value="ai-summary">AI Summary</TabsTrigger>
           <TabsTrigger value="recommendations">Actions</TabsTrigger>
+          <TabsTrigger value="diet">Diet</TabsTrigger>
         </TabsList>
 
-        {/* Overview Tab */}
         <TabsContent value="overview" className="space-y-6 mt-6">
-          {/* Risk Assessment Cards */}
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
-            {reportData.riskAssessment.map((item, index) => (
-              <Card key={index} className="border-border">
-                <CardContent className="p-4">
-                  <div className="flex items-center justify-between mb-3">
-                    <span className="text-sm font-medium text-muted-foreground">{item.disease}</span>
-                    {item.trend === "up" && <TrendingUp className="h-4 w-4 text-destructive" />}
-                    {item.trend === "down" && <TrendingDown className="h-4 w-4 text-success" />}
-                    {item.trend === "stable" && <Activity className="h-4 w-4 text-muted-foreground" />}
-                  </div>
-                  <div className="flex items-end gap-2">
-                    <span className="text-3xl font-bold text-foreground">{item.risk}%</span>
-                    {item.status === "high" && <AlertTriangle className="h-5 w-5 text-destructive mb-1" />}
-                    {item.status === "medium" && <AlertCircle className="h-5 w-5 text-warning-foreground mb-1" />}
-                    {item.status === "low" && <CheckCircle2 className="h-5 w-5 text-success mb-1" />}
-                  </div>
-                  <Progress value={item.risk} className={`h-2 mt-3 [&>div]:${getRiskColor(item.status)}`} />
-                </CardContent>
-              </Card>
-            ))}
-          </div>
-
-          {/* Key Findings */}
           <Card className="border-border">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -236,39 +251,20 @@ export default function ReportDetailPage() {
               </CardTitle>
             </CardHeader>
             <CardContent>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="p-4 rounded-lg bg-destructive/10 border border-destructive/20">
-                  <div className="flex items-center gap-2 mb-2">
-                    <Droplet className="h-5 w-5 text-destructive" />
-                    <span className="font-medium text-foreground">Elevated Glucose</span>
-                  </div>
-                  <p className="text-sm text-muted-foreground">
-                    142 mg/dL (Normal: 70-100)
-                  </p>
+              {(overview?.key_findings || []).length === 0 ? (
+                <p className="text-sm text-muted-foreground">No key findings available.</p>
+              ) : (
+                <div className="space-y-2">
+                  {(overview?.key_findings || []).map((finding: string) => (
+                    <div key={finding} className="p-3 rounded-lg border border-border bg-muted/30">
+                      <p className="text-sm text-foreground">{finding}</p>
+                    </div>
+                  ))}
                 </div>
-                <div className="p-4 rounded-lg bg-destructive/10 border border-destructive/20">
-                  <div className="flex items-center gap-2 mb-2">
-                    <Heart className="h-5 w-5 text-destructive" />
-                    <span className="font-medium text-foreground">High LDL Cholesterol</span>
-                  </div>
-                  <p className="text-sm text-muted-foreground">
-                    140 mg/dL (Normal: &lt;100)
-                  </p>
-                </div>
-                <div className="p-4 rounded-lg bg-warning/10 border border-warning/20">
-                  <div className="flex items-center gap-2 mb-2">
-                    <Activity className="h-5 w-5 text-warning-foreground" />
-                    <span className="font-medium text-foreground">Elevated HbA1c</span>
-                  </div>
-                  <p className="text-sm text-muted-foreground">
-                    6.8% (Normal: 4.0-5.6%)
-                  </p>
-                </div>
-              </div>
+              )}
             </CardContent>
           </Card>
 
-          {/* Quick AI Summary */}
           <Card className="border-border bg-primary/5">
             <CardContent className="p-6">
               <div className="flex items-start gap-4">
@@ -277,22 +273,13 @@ export default function ReportDetailPage() {
                 </div>
                 <div>
                   <h3 className="font-semibold text-foreground mb-2">AI Quick Summary</h3>
-                  <p className="text-muted-foreground">
-                    Your results indicate pre-diabetic blood sugar levels and elevated cholesterol. 
-                    These findings suggest a need for lifestyle modifications and possibly medical consultation. 
-                    Your hemoglobin and other blood counts are within normal ranges.
-                  </p>
-                  <Button className="mt-4" onClick={() => setActiveTab("ai-summary")}>
-                    Read Full Analysis
-                    <ArrowRight className="ml-2 h-4 w-4" />
-                  </Button>
+                  <p className="text-muted-foreground">{overview?.ai_summary || "Summary unavailable."}</p>
                 </div>
               </div>
             </CardContent>
           </Card>
         </TabsContent>
 
-        {/* Parameters Tab */}
         <TabsContent value="parameters" className="mt-6">
           <Card className="border-border">
             <CardHeader>
@@ -301,28 +288,17 @@ export default function ReportDetailPage() {
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {reportData.parameters.map((param, index) => (
-                  <div 
-                    key={index} 
-                    className={`p-4 rounded-lg border ${
-                      param.status === "high" ? "border-destructive/30 bg-destructive/5" : 
-                      param.status === "low" ? "border-warning/30 bg-warning/5" : 
-                      "border-border bg-muted/30"
-                    }`}
-                  >
+                {parameters.map((param) => (
+                  <div key={`${param.name}-${String(param.value)}`} className="p-4 rounded-lg border border-border bg-muted/30">
                     <div className="flex items-center justify-between mb-2">
                       <span className="font-medium text-foreground">{param.name}</span>
-                      <Badge variant="outline" className={getStatusColor(param.status)}>
-                        {param.status.charAt(0).toUpperCase() + param.status.slice(1)}
-                      </Badge>
+                      <Badge variant="outline">{param.status || "Unknown"}</Badge>
                     </div>
                     <div className="flex items-baseline gap-2">
                       <span className="text-2xl font-bold text-foreground">{param.value}</span>
-                      <span className="text-sm text-muted-foreground">{param.unit}</span>
+                      <span className="text-sm text-muted-foreground">{param.unit || ""}</span>
                     </div>
-                    <p className="text-sm text-muted-foreground mt-1">
-                      Normal Range: {param.normalRange} {param.unit}
-                    </p>
+                    <p className="text-sm text-muted-foreground mt-1">Normal Range: {param.normal_range || "Not available"}</p>
                   </div>
                 ))}
               </div>
@@ -330,7 +306,6 @@ export default function ReportDetailPage() {
           </Card>
         </TabsContent>
 
-        {/* AI Summary Tab */}
         <TabsContent value="ai-summary" className="mt-6">
           <Card className="border-border">
             <CardHeader>
@@ -338,79 +313,57 @@ export default function ReportDetailPage() {
                 <Sparkles className="h-5 w-5 text-primary" />
                 AI-Powered Analysis
               </CardTitle>
-              <CardDescription>
-                Easy-to-understand explanation of your test results
-              </CardDescription>
             </CardHeader>
-            <CardContent>
-              <div className="prose prose-sm max-w-none text-foreground">
-                {reportData.aiSummary.split('\n').map((paragraph, index) => {
-                  if (paragraph.startsWith('**') && paragraph.endsWith('**')) {
-                    return (
-                      <h3 key={index} className="text-lg font-semibold mt-4 mb-2 text-foreground">
-                        {paragraph.replace(/\*\*/g, '')}
-                      </h3>
-                    )
-                  }
-                  if (paragraph.startsWith('**')) {
-                    return (
-                      <p key={index} className="mb-2">
-                        <strong className="text-foreground">{paragraph.split('**')[1]}</strong>
-                        {paragraph.split('**')[2]}
-                      </p>
-                    )
-                  }
-                  if (paragraph.startsWith('-')) {
-                    return (
-                      <li key={index} className="ml-4 text-muted-foreground">
-                        {paragraph.replace('-', '').trim()}
-                      </li>
-                    )
-                  }
-                  if (paragraph.trim()) {
-                    return <p key={index} className="mb-2 text-muted-foreground">{paragraph}</p>
-                  }
-                  return null
-                })}
+            <CardContent className="space-y-4">
+              <p className="text-muted-foreground">{aiSummary?.summary || "Summary unavailable."}</p>
+
+              <div>
+                <h3 className="font-semibold text-foreground mb-2">Root Causes</h3>
+                <ul className="space-y-1">
+                  {(aiSummary?.root_causes || []).map((cause: string) => (
+                    <li key={cause} className="text-sm text-muted-foreground">- {cause}</li>
+                  ))}
+                </ul>
               </div>
 
-              <Separator className="my-6" />
+              <div>
+                <h3 className="font-semibold text-foreground mb-2">Recommendations</h3>
+                <ul className="space-y-1">
+                  {(aiSummary?.recommendations || []).map((item: string) => (
+                    <li key={item} className="text-sm text-muted-foreground">- {item}</li>
+                  ))}
+                </ul>
+              </div>
 
               <div className="flex items-center gap-2 p-4 rounded-lg bg-muted">
                 <Info className="h-5 w-5 text-muted-foreground shrink-0" />
-                <p className="text-sm text-muted-foreground">
-                  This AI-generated summary is for informational purposes only. 
-                  Please consult a healthcare professional for medical advice.
-                </p>
+                <p className="text-sm text-muted-foreground">This AI-generated summary is for informational purposes only. Please consult a healthcare professional.</p>
               </div>
             </CardContent>
           </Card>
         </TabsContent>
 
-        {/* Recommendations Tab */}
         <TabsContent value="recommendations" className="space-y-6 mt-6">
-          {/* Home Remedies */}
           <Card className="border-border">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Salad className="h-5 w-5 text-accent" />
                 Home Remedies
               </CardTitle>
-              <CardDescription>Natural ways to improve your health markers</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="space-y-3">
-                {reportData.recommendations.homeRemedies.map((remedy, index) => (
-                  <div key={index} className="flex items-start gap-4 p-4 rounded-lg border border-border hover:bg-muted/50 transition-colors">
+                {homeRemedies.map((item) => (
+                  <div key={item.key} className="flex items-start gap-4 p-4 rounded-lg border border-border hover:bg-muted/50 transition-colors">
                     <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-accent/10 shrink-0">
                       <Salad className="h-5 w-5 text-accent" />
                     </div>
                     <div className="flex-1">
                       <div className="flex items-center gap-2 mb-1">
-                        <span className="font-medium text-foreground">{remedy.title}</span>
-                        {getPriorityBadge(remedy.priority)}
+                        <span className="font-medium text-foreground">{item.title}</span>
+                        {getPriorityBadge(item.priority)}
                       </div>
-                      <p className="text-sm text-muted-foreground">{remedy.description}</p>
+                      <p className="text-sm text-muted-foreground">{item.description}</p>
                     </div>
                   </div>
                 ))}
@@ -418,60 +371,47 @@ export default function ReportDetailPage() {
             </CardContent>
           </Card>
 
-          {/* Medical Suggestions */}
           <Card className="border-border">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Pill className="h-5 w-5 text-primary" />
-                Medical Suggestions
+                Medications
               </CardTitle>
-              <CardDescription>Medications that may help (consult doctor first)</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="space-y-3">
-                {reportData.recommendations.medicalSuggestions.map((med, index) => (
-                  <div key={index} className="flex items-start gap-4 p-4 rounded-lg border border-border hover:bg-muted/50 transition-colors">
+                {medications.map((item) => (
+                  <div key={item.key} className="flex items-start gap-4 p-4 rounded-lg border border-border hover:bg-muted/50 transition-colors">
                     <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10 shrink-0">
                       <Pill className="h-5 w-5 text-primary" />
                     </div>
                     <div className="flex-1">
                       <div className="flex items-center gap-2 mb-1">
-                        <span className="font-medium text-foreground">{med.title}</span>
-                        {getPriorityBadge(med.priority)}
+                        <span className="font-medium text-foreground">{item.title}</span>
+                        {getPriorityBadge(item.priority)}
                       </div>
-                      <p className="text-sm text-muted-foreground">{med.description}</p>
+                      <p className="text-sm text-muted-foreground">{item.description}</p>
                     </div>
                     <Button variant="outline" size="sm" asChild>
-                      <Link href={`/dashboard/medicine?search=${encodeURIComponent(med.title)}`}>
-                        Find Generic
-                      </Link>
+                      <Link href={`/dashboard/medicine?search=${encodeURIComponent(item.title)}`}>Find Generic</Link>
                     </Button>
                   </div>
                 ))}
               </div>
-
-              <div className="flex items-center gap-2 p-4 rounded-lg bg-warning/10 border border-warning/20 mt-4">
-                <AlertTriangle className="h-5 w-5 text-warning-foreground shrink-0" />
-                <p className="text-sm text-warning-foreground">
-                  Always consult a healthcare professional before starting any medication.
-                </p>
-              </div>
             </CardContent>
           </Card>
 
-          {/* Lifestyle Changes */}
           <Card className="border-border">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <Activity className="h-5 w-5 text-success" />
                 Lifestyle Changes
               </CardTitle>
-              <CardDescription>Daily habits to improve your health</CardDescription>
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {reportData.recommendations.lifestyle.map((item, index) => (
-                  <div key={index} className="flex items-start gap-3 p-4 rounded-lg bg-success/5 border border-success/20">
+                {lifestyleChanges.map((item) => (
+                  <div key={item.key} className="flex items-start gap-3 p-4 rounded-lg bg-success/5 border border-success/20">
                     <CheckCircle2 className="h-5 w-5 text-success shrink-0 mt-0.5" />
                     <div>
                       <p className="font-medium text-foreground">{item.title}</p>
@@ -488,11 +428,44 @@ export default function ReportDetailPage() {
                     <ArrowRight className="ml-2 h-4 w-4" />
                   </Link>
                 </Button>
-                <Button variant="outline" asChild>
-                  <Link href="/dashboard/resources">
-                    Health Resources
-                  </Link>
-                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+
+        <TabsContent value="diet" className="mt-6">
+          <Card className="border-border">
+            <CardHeader>
+              <CardTitle>Diet Plan</CardTitle>
+              <CardDescription>Generated from your report analysis</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
+                <div className="p-3 rounded-lg bg-muted/40">
+                  <p className="text-xs text-muted-foreground">Calories</p>
+                  <p className="text-xl font-semibold">{dietPlan?.calories ?? 0}</p>
+                </div>
+                <div className="p-3 rounded-lg bg-muted/40">
+                  <p className="text-xs text-muted-foreground">Protein</p>
+                  <p className="text-xl font-semibold">{dietPlan?.protein ?? 0}g</p>
+                </div>
+                <div className="p-3 rounded-lg bg-muted/40">
+                  <p className="text-xs text-muted-foreground">Carbs</p>
+                  <p className="text-xl font-semibold">{dietPlan?.carbs ?? 0}g</p>
+                </div>
+                <div className="p-3 rounded-lg bg-muted/40">
+                  <p className="text-xs text-muted-foreground">Fiber</p>
+                  <p className="text-xl font-semibold">{dietPlan?.fiber ?? 0}g</p>
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                {Object.entries(dietPlan?.meals || {}).map(([meal, value]) => (
+                  <div key={meal} className="p-3 rounded-lg border border-border">
+                    <p className="text-sm font-semibold capitalize">{meal}</p>
+                    <p className="text-sm text-muted-foreground">{String(value)}</p>
+                  </div>
+                ))}
               </div>
             </CardContent>
           </Card>

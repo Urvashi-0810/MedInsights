@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { Suspense, useState, useEffect } from "react"
 import { useSearchParams } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
@@ -110,7 +110,7 @@ const medicineDatabase: Record<string, MedicineInfo> = {
 const recentSearches = ["Metformin", "Atorvastatin", "Omeprazole", "Paracetamol"]
 const popularMedicines = ["Metformin", "Amlodipine", "Atorvastatin", "Aspirin", "Losartan"]
 
-export default function MedicineFinderPage() {
+function MedicineFinderContent() {
   const searchParams = useSearchParams()
   const [searchQuery, setSearchQuery] = useState("")
   const [selectedMedicine, setSelectedMedicine] = useState<MedicineInfo | null>(null)
@@ -295,8 +295,8 @@ export default function MedicineFinderPage() {
                       </DialogHeader>
                       <div className="py-4">
                         <ul className="space-y-2">
-                          {selectedMedicine.sideEffects.map((effect, index) => (
-                            <li key={index} className="flex items-center gap-2 text-muted-foreground">
+                          {selectedMedicine.sideEffects.map((effect) => (
+                            <li key={effect} className="flex items-center gap-2 text-muted-foreground">
                               <div className="h-1.5 w-1.5 rounded-full bg-warning" />
                               {effect}
                             </li>
@@ -322,8 +322,8 @@ export default function MedicineFinderPage() {
                       </DialogHeader>
                       <div className="py-4">
                         <ul className="space-y-2">
-                          {selectedMedicine.precautions.map((precaution, index) => (
-                            <li key={index} className="flex items-start gap-2 text-muted-foreground">
+                          {selectedMedicine.precautions.map((precaution) => (
+                            <li key={precaution} className="flex items-start gap-2 text-muted-foreground">
                               <CheckCircle2 className="h-4 w-4 text-primary shrink-0 mt-0.5" />
                               {precaution}
                             </li>
@@ -458,5 +458,13 @@ export default function MedicineFinderPage() {
         </Card>
       )}
     </div>
+  )
+}
+
+export default function MedicineFinderPage() {
+  return (
+    <Suspense fallback={<div className="text-sm text-muted-foreground">Loading medicine finder...</div>}>
+      <MedicineFinderContent />
+    </Suspense>
   )
 }

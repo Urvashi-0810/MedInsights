@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useCallback } from "react"
 import Link from "next/link"
+import { useRouter } from "next/navigation"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card"
 import { Progress } from "@/components/ui/progress"
@@ -23,6 +24,17 @@ import {
 } from "lucide-react"
 import { useDropzone } from "react-dropzone"
 import { toast } from "sonner"
+import {
+  ApiError,
+  extractFileName,
+  getAllReports,
+  getReportOverview,
+  getRiskLevelFromScore,
+  hydrateReportById,
+  type ReportListItem,
+  type ReportOverview,
+  uploadReport,
+} from "@/lib/api"
 
 interface HealthMetric {
   name: string
@@ -32,25 +44,11 @@ interface HealthMetric {
   change?: string
 }
 
-interface Report {
-  id: string
-  name: string
-  date: string
-  status: "analyzed" | "processing" | "pending"
-  riskLevel: "low" | "medium" | "high"
-}
-
 const mockMetrics: HealthMetric[] = [
   { name: "Blood Glucose", value: "142 mg/dL", status: "warning", icon: Droplet, change: "+12%" },
   { name: "Heart Rate", value: "72 bpm", status: "normal", icon: Heart, change: "-2%" },
   { name: "Hemoglobin", value: "13.5 g/dL", status: "normal", icon: Activity, change: "+5%" },
   { name: "Cholesterol", value: "210 mg/dL", status: "warning", icon: TrendingUp, change: "+8%" },
-]
-
-const mockReports: Report[] = [
-  { id: "1", name: "Complete Blood Count", date: "2024-01-15", status: "analyzed", riskLevel: "medium" },
-  { id: "2", name: "Lipid Profile", date: "2024-01-10", status: "analyzed", riskLevel: "high" },
-  { id: "3", name: "Thyroid Panel", date: "2024-01-05", status: "analyzed", riskLevel: "low" },
 ]
 
 const quickActions = [
@@ -60,9 +58,13 @@ const quickActions = [
 ]
 
 export default function DashboardPage() {
+  const router = useRouter()
   const [userName, setUserName] = useState("there")
   const [uploading, setUploading] = useState(false)
   const [uploadedFiles, setUploadedFiles] = useState<File[]>([])
+  const [reports, setReports] = useState<ReportListItem[]>([])
+  const [latestOverview, setLatestOverview] = useState<ReportOverview | null>(null)
+  const [reportsError, setReportsError] = useState<string | null>(null)
 
   useEffect(() => {
     const storedProfile = localStorage.getItem("userProfile")
@@ -72,6 +74,31 @@ export default function DashboardPage() {
         setUserName(profile.name.split(" ")[0])
       }
     }
+  }, [])
+
+  useEffect(() => {
+    const fetchDashboardData = async () => {
+      setReportsError(null)
+
+      try {
+        const list = await getAllReports(20)
+        setReports(list)
+
+        if (list.length > 0) {
+          try {
+            const overview = await getReportOverview(list[0].id)
+            setLatestOverview(overview)
+          } catch {
+            setLatestOverview(null)
+          }
+        }
+      } catch (error) {
+        const message = error instanceof ApiError ? error.message : "Failed to load dashboard data"
+        setReportsError(message)
+      }
+    }
+
+    fetchDashboardData()
   }, [])
 
   const onDrop = useCallback((acceptedFiles: File[]) => {
@@ -99,16 +126,37 @@ export default function DashboardPage() {
     }
     
     setUploading(true)
-    // Simulate upload and analysis
-    await new Promise(resolve => setTimeout(resolve, 2000))
-    setUploading(false)
-    setUploadedFiles([])
-    toast.success("Reports uploaded! Analysis will be ready shortly.", {
-      action: {
-        label: "View Reports",
-        onClick: () => window.location.href = "/dashboard/reports"
+
+    try {
+      let firstReportId: number | null = null
+
+      for (const file of uploadedFiles) {
+        const result = await uploadReport(file)
+
+        // Immediately hydrate all report sections using every GET endpoint.
+        await hydrateReportById(result.report_id)
+
+        firstReportId ??= result.report_id
       }
-    })
+
+      setUploadedFiles([])
+      const targetRoute = firstReportId === null
+        ? "/dashboard/reports"
+        : `/dashboard/reports/${firstReportId}`
+
+      toast.success("Reports uploaded successfully!", {
+        description: "Your AI-powered analysis is ready.",
+        action: {
+          label: "View Reports",
+          onClick: () => router.push(targetRoute)
+        }
+      })
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : "Upload failed. Please try again."
+      toast.error(message)
+    } finally {
+      setUploading(false)
+    }
   }
 
   const getStatusColor = (status: string) => {
@@ -151,8 +199,8 @@ export default function DashboardPage() {
 
       {/* Quick Actions */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-        {quickActions.map((action, index) => (
-          <Link key={index} href={action.href}>
+        {quickActions.map((action) => (
+          <Link key={action.title} href={action.href}>
             <Card className="hover:shadow-md transition-shadow cursor-pointer border-border group">
               <CardContent className="p-4 flex items-center gap-4">
                 <div className={`flex h-12 w-12 items-center justify-center rounded-lg ${action.color} text-white`}>
@@ -203,7 +251,7 @@ export default function DashboardPage() {
           {uploadedFiles.length > 0 && (
             <div className="mt-4 space-y-2">
               {uploadedFiles.map((file, index) => (
-                <div key={index} className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
+                <div key={`${file.name}-${file.lastModified}`} className="flex items-center justify-between p-3 rounded-lg bg-muted/50">
                   <div className="flex items-center gap-3">
                     <FileText className="h-5 w-5 text-primary" />
                     <div>
@@ -226,7 +274,10 @@ export default function DashboardPage() {
         </CardContent>
       </Card>
 
-      {/* Health Metrics Grid */}
+      {reportsError && (
+        <div className="text-sm text-destructive">{reportsError}</div>
+      )}
+
       <div>
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-xl font-semibold text-foreground">Health Metrics</h2>
@@ -235,8 +286,30 @@ export default function DashboardPage() {
           </Link>
         </div>
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-          {mockMetrics.map((metric, index) => (
-            <Card key={index} className="border-border">
+          {(latestOverview
+            ? Object.entries(latestOverview.risks)
+                .filter(([key]) => key !== "overall")
+                .slice(0, 4)
+                .map(([name, value], index) => {
+                  const level = getRiskLevelFromScore(value)
+                  let status: "normal" | "warning" | "danger" = "normal"
+
+                  if (level === "high") {
+                    status = "danger"
+                  } else if (level === "medium") {
+                    status = "warning"
+                  }
+
+                  return {
+                    name: name.replaceAll("_", " "),
+                    value: `${value}%`,
+                    status,
+                    icon: [Droplet, Heart, Activity, TrendingUp][index % 4],
+                  }
+                })
+            : mockMetrics
+          ).map((metric) => (
+            <Card key={metric.name} className="border-border">
               <CardContent className="p-4">
                 <div className="flex items-start justify-between">
                   <div className={`flex h-10 w-10 items-center justify-center rounded-lg ${getStatusColor(metric.status)}`}>
@@ -273,25 +346,29 @@ export default function DashboardPage() {
             </div>
           </CardHeader>
           <CardContent className="space-y-3">
-            {mockReports.map((report) => (
+            {reports.slice(0, 3).map((report) => (
               <Link key={report.id} href={`/dashboard/reports/${report.id}`}>
-                <div className="flex items-center justify-between p-3 rounded-lg hover:bg-muted/50 transition-colors cursor-pointer">
+                  <div className="flex items-center justify-between p-3 rounded-lg hover:bg-muted/50 transition-colors cursor-pointer">
                   <div className="flex items-center gap-3">
                     <div className="flex h-10 w-10 items-center justify-center rounded-lg bg-primary/10">
                       <FileText className="h-5 w-5 text-primary" />
                     </div>
                     <div>
-                      <p className="font-medium text-foreground">{report.name}</p>
+                      <p className="font-medium text-foreground">{extractFileName(report.file_url)}</p>
                       <div className="flex items-center gap-2 text-sm text-muted-foreground">
                         <Clock className="h-3 w-3" />
-                        {new Date(report.date).toLocaleDateString()}
+                        {report.created_at ? new Date(report.created_at).toLocaleDateString() : "-"}
                       </div>
                     </div>
                   </div>
-                  {getRiskBadge(report.riskLevel)}
+                  {getRiskBadge(getRiskLevelFromScore(report.overall_risk_score))}
                 </div>
               </Link>
             ))}
+
+            {reports.length === 0 && (
+              <p className="text-sm text-muted-foreground">No reports yet. Upload a report to get started.</p>
+            )}
           </CardContent>
         </Card>
 
@@ -302,36 +379,49 @@ export default function DashboardPage() {
             <CardDescription>Based on your latest reports</CardDescription>
           </CardHeader>
           <CardContent className="space-y-4">
-            {[
-              { name: "Diabetes", risk: 72, status: "high" },
-              { name: "Heart Disease", risk: 45, status: "medium" },
-              { name: "Anemia", risk: 18, status: "low" },
-              { name: "Liver Issues", risk: 22, status: "low" },
-            ].map((item, index) => (
-              <div key={index} className="space-y-2">
-                <div className="flex items-center justify-between">
-                  <span className="text-sm font-medium text-foreground">{item.name}</span>
-                  <div className="flex items-center gap-2">
-                    <span className="text-sm text-muted-foreground">{item.risk}%</span>
-                    {item.status === "high" && <AlertTriangle className="h-4 w-4 text-destructive" />}
-                    {item.status === "medium" && <AlertTriangle className="h-4 w-4 text-warning-foreground" />}
-                    {item.status === "low" && <CheckCircle2 className="h-4 w-4 text-success" />}
+            {(latestOverview
+              ? Object.entries(latestOverview.risks)
+                  .filter(([key]) => key !== "overall")
+                  .slice(0, 4)
+                  .map(([name, risk]) => ({
+                    name: name.replaceAll("_", " "),
+                    risk,
+                    status: getRiskLevelFromScore(risk),
+                  }))
+              : [
+                  { name: "Diabetes", risk: 72, status: "high" as const },
+                  { name: "Heart Disease", risk: 45, status: "medium" as const },
+                  { name: "Anemia", risk: 18, status: "low" as const },
+                  { name: "Liver Issues", risk: 22, status: "low" as const },
+                ]
+            ).map((item) => {
+              let progressClassName = "[&>div]:bg-success"
+
+              if (item.status === "high") {
+                progressClassName = "[&>div]:bg-destructive"
+              } else if (item.status === "medium") {
+                progressClassName = "[&>div]:bg-warning"
+              }
+
+              return (
+                <div key={item.name} className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-medium text-foreground">{item.name}</span>
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-muted-foreground">{item.risk}%</span>
+                      {item.status === "high" && <AlertTriangle className="h-4 w-4 text-destructive" />}
+                      {item.status === "medium" && <AlertTriangle className="h-4 w-4 text-warning-foreground" />}
+                      {item.status === "low" && <CheckCircle2 className="h-4 w-4 text-success" />}
+                    </div>
                   </div>
+                  <Progress value={item.risk} className={`h-2 ${progressClassName}`} />
                 </div>
-                <Progress 
-                  value={item.risk} 
-                  className={`h-2 ${
-                    item.status === "high" ? "[&>div]:bg-destructive" : 
-                    item.status === "medium" ? "[&>div]:bg-warning" : 
-                    "[&>div]:bg-success"
-                  }`} 
-                />
-              </div>
-            ))}
+              )
+            })}
 
             <div className="pt-4 border-t border-border">
               <Button variant="outline" className="w-full" asChild>
-                <Link href="/dashboard/reports/1">
+                <Link href={reports[0] ? `/dashboard/reports/${reports[0].id}` : "/dashboard/reports"}>
                   View Detailed Analysis
                   <ArrowRight className="ml-2 h-4 w-4" />
                 </Link>
@@ -341,7 +431,6 @@ export default function DashboardPage() {
         </Card>
       </div>
 
-      {/* AI Insights */}
       <Card className="border-border bg-primary/5">
         <CardContent className="p-6">
           <div className="flex items-start gap-4">
@@ -351,16 +440,14 @@ export default function DashboardPage() {
             <div className="flex-1">
               <h3 className="font-semibold text-foreground mb-2">AI Health Insight</h3>
               <p className="text-muted-foreground">
-                Based on your recent blood test, your glucose levels are slightly elevated. 
-                Consider reducing sugar intake and increasing physical activity. We&apos;ve prepared 
-                a personalized diet plan with foods that can help manage blood sugar levels naturally.
+                {latestOverview?.ai_summary || "Upload a report to receive your AI health insight."}
               </p>
               <div className="flex flex-wrap gap-3 mt-4">
                 <Button size="sm" asChild>
                   <Link href="/dashboard/diet">View Diet Plan</Link>
                 </Button>
                 <Button size="sm" variant="outline" asChild>
-                  <Link href="/dashboard/reports/1">See Full Analysis</Link>
+                  <Link href={reports[0] ? `/dashboard/reports/${reports[0].id}` : "/dashboard/reports"}>See Full Analysis</Link>
                 </Button>
               </div>
             </div>

@@ -28,6 +28,7 @@ import {
 } from "lucide-react"
 import { useDropzone } from "react-dropzone"
 import { toast } from "sonner"
+import { ApiError, hydrateReportById, uploadReport } from "@/lib/api"
 
 interface UploadedFile {
   file: File
@@ -67,7 +68,7 @@ export default function UploadReportPage() {
     setUploadedFiles(prev => {
       const newFiles = [...prev]
       if (newFiles[index].preview) {
-        URL.revokeObjectURL(newFiles[index].preview!)
+        URL.revokeObjectURL(newFiles[index].preview)
       }
       newFiles.splice(index, 1)
       return newFiles
@@ -82,51 +83,67 @@ export default function UploadReportPage() {
 
     setIsProcessing(true)
 
-    // Simulate file processing
-    for (let i = 0; i < uploadedFiles.length; i++) {
-      // Update to uploading
-      setUploadedFiles(prev => {
-        const newFiles = [...prev]
-        newFiles[i] = { ...newFiles[i], status: "uploading" }
-        return newFiles
-      })
+    try {
+      let firstReportId: number | null = null
 
-      // Simulate upload progress
-      for (let progress = 0; progress <= 100; progress += 20) {
-        await new Promise(resolve => setTimeout(resolve, 100))
-        setUploadedFiles(prev => {
-          const newFiles = [...prev]
-          newFiles[i] = { ...newFiles[i], progress }
-          return newFiles
+      for (let i = 0; i < uploadedFiles.length; i++) {
+        setUploadedFiles((prev) => {
+          const nextFiles = [...prev]
+          nextFiles[i] = { ...nextFiles[i], status: "uploading", progress: 25 }
+          return nextFiles
+        })
+
+        const result = await uploadReport(uploadedFiles[i].file)
+
+        // Immediately hydrate all report sections using every GET endpoint.
+        await hydrateReportById(result.report_id)
+
+        firstReportId ??= result.report_id
+
+        setUploadedFiles((prev) => {
+          const nextFiles = [...prev]
+          nextFiles[i] = { ...nextFiles[i], status: "analyzing", progress: 75 }
+          return nextFiles
+        })
+
+        setUploadedFiles((prev) => {
+          const nextFiles = [...prev]
+          nextFiles[i] = { ...nextFiles[i], status: "complete", progress: 100 }
+          return nextFiles
         })
       }
 
-      // Update to analyzing
-      setUploadedFiles(prev => {
-        const newFiles = [...prev]
-        newFiles[i] = { ...newFiles[i], status: "analyzing" }
-        return newFiles
+      for (const item of uploadedFiles) {
+        if (item.preview) {
+          URL.revokeObjectURL(item.preview)
+        }
+      }
+
+      setUploadedFiles([])
+      setReportName("")
+      setReportType("")
+      setNotes("")
+
+      toast.success("Reports analyzed successfully!", {
+        description: "Your AI-powered analysis is ready.",
       })
 
-      await new Promise(resolve => setTimeout(resolve, 1500))
+      if (firstReportId !== null) {
+        router.push(`/dashboard/reports/${firstReportId}`)
+      }
+    } catch (error) {
+      const message = error instanceof ApiError ? error.message : "Upload failed. Please try again."
+      toast.error(message)
 
-      // Update to complete
-      setUploadedFiles(prev => {
-        const newFiles = [...prev]
-        newFiles[i] = { ...newFiles[i], status: "complete" }
-        return newFiles
-      })
+      setUploadedFiles((prev) =>
+        prev.map((item) => ({
+          ...item,
+          status: item.status === "complete" ? item.status : "error",
+        }))
+      )
+    } finally {
+      setIsProcessing(false)
     }
-
-    setIsProcessing(false)
-    toast.success("Reports analyzed successfully!", {
-      description: "Your AI-powered analysis is ready.",
-    })
-
-    // Redirect to reports page after a short delay
-    setTimeout(() => {
-      router.push("/dashboard/reports/1")
-    }, 1500)
   }
 
   const getStatusIcon = (status: string) => {
@@ -207,7 +224,7 @@ export default function UploadReportPage() {
               <p className="text-sm font-medium text-foreground">Uploaded Files</p>
               {uploadedFiles.map((item, index) => (
                 <div 
-                  key={index} 
+                  key={`${item.file.name}-${item.file.lastModified}`} 
                   className="flex items-center gap-4 p-4 rounded-lg border border-border bg-muted/30"
                 >
                   {item.preview ? (
@@ -344,7 +361,7 @@ export default function UploadReportPage() {
         <Button 
           onClick={handleSubmit} 
           disabled={uploadedFiles.length === 0 || isProcessing}
-          className="min-w-[150px]"
+          className="min-w-37.5"
         >
           {isProcessing ? (
             <>

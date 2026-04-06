@@ -1,6 +1,6 @@
 "use client"
 
-import { useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
@@ -28,42 +28,133 @@ import {
   Filter,
   Clock,
   AlertTriangle,
-  CheckCircle2,
   Eye,
   Download,
   Trash2
 } from "lucide-react"
+import {
+  ApiError,
+  extractFileName,
+  getAllReports,
+  getFullReport,
+  getReportOverview,
+  getRiskLevelFromScore,
+  type ReportListItem,
+} from "@/lib/api"
 
 interface Report {
-  id: string
+  id: number
   name: string
   type: string
   date: string
   status: "analyzed" | "processing" | "pending"
   riskLevel: "low" | "medium" | "high"
-  parameters: number
+  parameters: string
 }
 
-const mockReports: Report[] = [
-  { id: "1", name: "Complete Blood Count", type: "Blood Test", date: "2024-01-15", status: "analyzed", riskLevel: "medium", parameters: 24 },
-  { id: "2", name: "Lipid Profile", type: "Blood Test", date: "2024-01-10", status: "analyzed", riskLevel: "high", parameters: 8 },
-  { id: "3", name: "Thyroid Panel", type: "Blood Test", date: "2024-01-05", status: "analyzed", riskLevel: "low", parameters: 6 },
-  { id: "4", name: "Liver Function Test", type: "Blood Test", date: "2023-12-20", status: "analyzed", riskLevel: "low", parameters: 12 },
-  { id: "5", name: "Kidney Function Test", type: "Blood Test", date: "2023-12-15", status: "analyzed", riskLevel: "medium", parameters: 10 },
-  { id: "6", name: "HbA1c Test", type: "Diabetes", date: "2023-12-01", status: "analyzed", riskLevel: "high", parameters: 4 },
-]
+function resolveReportType(data: unknown): string {
+  if (!data || typeof data !== "object") {
+    return "Medical Report"
+  }
+
+  const candidate = (data as { report_type?: unknown }).report_type
+  return typeof candidate === "string" && candidate.trim().length > 0
+    ? candidate
+    : "Medical Report"
+}
+
+function resolveReportStatus(parameterCount: number): "analyzed" | "processing" | "pending" {
+  if (parameterCount > 0) {
+    return "analyzed"
+  }
+
+  return "pending"
+}
+
+function normalizeRiskLevel(value: unknown): "low" | "medium" | "high" {
+  if (typeof value !== "string") {
+    return "medium"
+  }
+
+  const normalized = value.trim().toLowerCase()
+  if (normalized === "low" || normalized === "medium" || normalized === "high") {
+    return normalized
+  }
+
+  return "medium"
+}
 
 export default function ReportsPage() {
+  const [reports, setReports] = useState<Report[]>([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState("")
   const [filterType, setFilterType] = useState("all")
   const [filterRisk, setFilterRisk] = useState("all")
 
-  const filteredReports = mockReports.filter(report => {
-    const matchesSearch = report.name.toLowerCase().includes(searchQuery.toLowerCase())
-    const matchesType = filterType === "all" || report.type === filterType
-    const matchesRisk = filterRisk === "all" || report.riskLevel === filterRisk
-    return matchesSearch && matchesType && matchesRisk
-  })
+  useEffect(() => {
+    const fetchReports = async () => {
+      setLoading(true)
+      setError(null)
+
+      try {
+        const list = await getAllReports(100)
+        const mapped = await Promise.all(
+          list.map(async (item: ReportListItem) => {
+            try {
+              const [fullReport, overview] = await Promise.all([
+                getFullReport(item.id),
+                getReportOverview(item.id),
+              ])
+              const parameterCount = Array.isArray(fullReport.parameters)
+                ? fullReport.parameters.length
+                : 0
+              const riskScore = Number(overview.overall_risk_score) || 0
+
+              return {
+                id: item.id,
+                name: extractFileName(item.file_url),
+                type: resolveReportType(fullReport.structured_data),
+                date: item.created_at || fullReport.created_at || new Date().toISOString(),
+                status: resolveReportStatus(parameterCount),
+                riskLevel: normalizeRiskLevel(overview.risk_level) || getRiskLevelFromScore(riskScore),
+                parameters: parameterCount > 0 ? String(parameterCount) : "-",
+              }
+            } catch {
+              const score = item.overall_risk_score || 0
+              return {
+                id: item.id,
+                name: extractFileName(item.file_url),
+                type: "Medical Report",
+                date: item.created_at || new Date().toISOString(),
+                status: "pending" as const,
+                riskLevel: getRiskLevelFromScore(score),
+                parameters: "-",
+              }
+            }
+          })
+        )
+
+        setReports(mapped)
+      } catch (err) {
+        const message = err instanceof ApiError ? err.message : "Failed to load reports"
+        setError(message)
+      } finally {
+        setLoading(false)
+      }
+    }
+
+    fetchReports()
+  }, [])
+
+  const filteredReports = useMemo(() => {
+    return reports.filter((report) => {
+      const matchesSearch = report.name.toLowerCase().includes(searchQuery.toLowerCase())
+      const matchesType = filterType === "all" || report.type === filterType
+      const matchesRisk = filterRisk === "all" || report.riskLevel === filterRisk
+      return matchesSearch && matchesType && matchesRisk
+    })
+  }, [reports, searchQuery, filterType, filterRisk])
 
   const getRiskBadge = (risk: string) => {
     switch (risk) {
@@ -83,9 +174,9 @@ export default function ReportsPage() {
     }
   }
 
-  const totalReports = mockReports.length
-  const highRiskCount = mockReports.filter(r => r.riskLevel === "high").length
-  const mediumRiskCount = mockReports.filter(r => r.riskLevel === "medium").length
+  const totalReports = reports.length
+  const highRiskCount = reports.filter((r) => r.riskLevel === "high").length
+  const mediumRiskCount = reports.filter((r) => r.riskLevel === "medium").length
 
   return (
     <div className="space-y-6">
@@ -163,18 +254,17 @@ export default function ReportsPage() {
             </div>
             <div className="flex gap-3">
               <Select value={filterType} onValueChange={setFilterType}>
-                <SelectTrigger className="w-[150px]">
+                <SelectTrigger className="w-37.5">
                   <Filter className="h-4 w-4 mr-2" />
                   <SelectValue placeholder="Type" />
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="all">All Types</SelectItem>
-                  <SelectItem value="Blood Test">Blood Test</SelectItem>
-                  <SelectItem value="Diabetes">Diabetes</SelectItem>
+                  <SelectItem value="Medical Report">Medical Report</SelectItem>
                 </SelectContent>
               </Select>
               <Select value={filterRisk} onValueChange={setFilterRisk}>
-                <SelectTrigger className="w-[150px]">
+                <SelectTrigger className="w-37.5">
                   <SelectValue placeholder="Risk Level" />
                 </SelectTrigger>
                 <SelectContent>
@@ -195,6 +285,14 @@ export default function ReportsPage() {
           <CardTitle>All Reports</CardTitle>
         </CardHeader>
         <CardContent>
+          {loading && (
+            <div className="text-sm text-muted-foreground mb-4">Loading reports...</div>
+          )}
+
+          {error && (
+            <div className="text-sm text-destructive mb-4">{error}</div>
+          )}
+
           <div className="overflow-x-auto">
             <Table>
               <TableHeader>
@@ -253,7 +351,7 @@ export default function ReportsPage() {
             </Table>
           </div>
 
-          {filteredReports.length === 0 && (
+          {!loading && filteredReports.length === 0 && (
             <div className="text-center py-12">
               <FileText className="h-12 w-12 text-muted-foreground mx-auto mb-4" />
               <p className="text-foreground font-medium">No reports found</p>
